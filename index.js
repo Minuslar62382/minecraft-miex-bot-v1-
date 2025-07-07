@@ -1,21 +1,24 @@
 const mineflayer = require('mineflayer');
-const armorManager = require('mineflayer-armor-manager')(mineflayer);
+const armorManager = require('mineflayer-armor-manager');
 const collectBlock = require('mineflayer-collectblock').plugin;
 const pathfinder = require('mineflayer-pathfinder').pathfinder;
 const { goals: { GoalNear } } = require('mineflayer-pathfinder');
+const pvp = require('mineflayer-pvp').plugin; // <-- EKLENDİ
+
 
 const bot = mineflayer.createBot({
   host: 'localhost', // Sunucu IP
-  port: 25565,       // Sunucu portu
+  port: 62671,       // Sunucu portu
   username: 'Bot'    // Bot ismi
 });
 
 bot.loadPlugin(armorManager);
 bot.loadPlugin(collectBlock);
 bot.loadPlugin(pathfinder);
+bot.loadPlugin(pvp);
 
 bot.once('spawn', () => {
-  bot.armorManager.equipAll();
+  
   bot.chat('Hazır! #yardım yazarak komutları görebilirsin.');
 });
 
@@ -32,7 +35,7 @@ bot.on('chat', (username, message) => {
   const command = args[0];
 
   if (command === '#yardım') {
-    bot.chat('Komutlar: #collect <blok> <sayı> | #attack <isim> | #sleep | #drop | #chop <sayı> | #yardım');
+    bot.chat('Komutlar: #collect <blok> <sayı> | #attack <isim> | #sleep | #drop | #chop <sayı> |#follow <isim> | #come | #yardım');
   }
 
   if (command === '#collect') {
@@ -45,9 +48,67 @@ bot.on('chat', (username, message) => {
     collectBlocks(blockName, count);
   }
 
+  
+  
+
   if (command === '#attack') {
-    const targetName = args[1];
-    attackPlayer(targetName);
+    const targetName = args[1]
+    if (!targetName) {
+      bot.chat('Kullanım: #attack <isim>')
+      return
+    }
+    const player = bot.players[targetName]?.entity
+    if (!player) {
+      bot.chat(`${targetName} bulunamadı.`)
+      return
+    }
+
+    bot.chat(`${targetName} oyuncusuna saldırıyorum!`)
+    bot.pvp.attack(player)
+  }
+
+  if (command === '#stop') {
+    bot.pvp.stop()
+    bot.pathfinder.setGoal(null)
+    bot.chat('Saldırı veya takip durduruldu.')
+  }
+
+  if (command === '#come') {
+    const player = bot.players[username]?.entity
+    if (!player) {
+      bot.chat('Seni bulamadım.')
+      return
+    }
+
+    const mcData = require('minecraft-data')(bot.version)
+    const movements = new Movements(bot, mcData)
+    bot.pathfinder.setMovements(movements)
+
+    const goal = new GoalNear(player.position.x, player.position.y, player.position.z, 1)
+    bot.pathfinder.setGoal(goal)
+    bot.chat(`${username}, yanına geliyorum!`)
+  }
+
+  if (command === '#follow') {
+    const targetName = args[1]
+    if (!targetName) {
+      bot.chat('Kullanım: #follow <isim>')
+      return
+    }
+
+    const player = bot.players[targetName]?.entity
+    if (!player) {
+      bot.chat(`${targetName} bulunamadı.`)
+      return
+    }
+
+    const mcData = require('minecraft-data')(bot.version)
+    const movements = new Movements(bot, mcData)
+    bot.pathfinder.setMovements(movements)
+
+    const goal = new GoalFollow(player, 2)
+    bot.pathfinder.setGoal(goal, true) // true = sürekli takip et
+    bot.chat(`${targetName} oyuncusunu takip ediyorum.`)
   }
 
   if (command === '#sleep') {
@@ -111,9 +172,28 @@ function attackPlayer(name) {
     bot.chat(`${name} bulunamadı.`);
     return;
   }
-  bot.chat(`${name} oyuncusuna saldırıyorum.`);
+  bot.chat(`${name} oyuncusuna saldırıyor ve takip ediyorum.`);
+
+  // Takip ve saldırı başlat
   bot.pvp.attack(player.entity);
+
+  // Hedefi sürekli takip et
+  const followInterval = setInterval(() => {
+    if (!player.entity || !bot.pvp.target) {
+      clearInterval(followInterval);
+      bot.chat(`${name} artık hedefte değil.`);
+      return;
+    }
+    bot.lookAt(player.entity.position.offset(0, player.entity.height, 0));
+  }, 1000);
+
+  // Saldırı bitince intervali temizle
+  bot.once('stoppedAttacking', () => {
+    clearInterval(followInterval);
+    bot.chat(`${name} saldırısı bitti.`);
+  });
 }
+
 
 // Yatakta uyu
 function sleepInBed() {
@@ -156,11 +236,17 @@ function dropAllItems() {
 // Ağaç kes
 async function chopWood(count) {
   const mcData = require('minecraft-data')(bot.version);
-  const logIds = [
-    mcData.blocksByName.oak_log.id,
-    mcData.blocksByName.birch_log.id,
-    mcData.blocksByName.spruce_log.id
-  ];
+
+  // Blok isimlerini kontrol et
+  const logNames = ['oak_log', 'birch_log', 'spruce_log', 'log', 'log2'];
+  const logIds = logNames
+    .map(name => mcData.blocksByName[name]?.id)
+    .filter(id => id !== undefined);
+
+  if (logIds.length === 0) {
+    bot.chat('Odun blokları bu sürümde bulunamadı.');
+    return;
+  }
 
   let chopped = 0;
 
@@ -184,6 +270,3 @@ async function chopWood(count) {
 
   bot.chat(`Kesilen toplam ağaç: ${chopped}`);
 }
-
-bot.on('error', err => console.log(err));
-bot.on('kicked', reason => console.log(reason));
